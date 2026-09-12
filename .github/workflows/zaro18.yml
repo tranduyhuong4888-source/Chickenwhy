@@ -6,7 +6,7 @@ on:
       runtime_hours:
         description: 'Runtime (hours)'
         required: false
-        default: '5.99'
+        default: '5.9'
         type: string
   schedule:
     - cron: '45 */6 * * *'
@@ -112,14 +112,14 @@ jobs:
 
       - name: Download Pikafish engine + NNUE
         if: steps.cache-pikafish.outputs.cache-hit != 'true'
-        timeout-minutes: 3
+        timeout-minutes: 5
         env:
           PK_URL: https://github.com/official-pikafish/Pikafish/releases/download/Pikafish-2026-01-02/Pikafish.2026-01-02.7z
         run: |
           set -e
           python3 -m pip install --quiet py7zr
 
-          curl -fL --retry 4 --retry-delay 5 --retry-all-errors --max-time 420                -o /tmp/pikafish.7z "$PK_URL"
+          curl -fL --retry 4 --retry-delay 5 --retry-all-errors --max-time 420 -o /tmp/pikafish.7z "$PK_URL"
           ls -lh /tmp/pikafish.7z
 
           if grep -q avx512vnni /proc/cpuinfo; then BIN=pikafish-vnni512
@@ -142,8 +142,7 @@ jobs:
           print(f"[ENGINE] Đã cài {binname} + NNUE vào {home}")
           PY
 
-          if ! echo -e "uci
-quit" | "$HOME/pikafish" > /dev/null 2>&1; then
+          if ! printf "uci\nquit\n" | "$HOME/pikafish" > /dev/null 2>&1; then
             echo "[ENGINE] $BIN không chạy được -> fallback sse41-popcnt"
             cp /tmp/pikafish/Linux/pikafish-sse41-popcnt "$HOME/pikafish"
             chmod +x "$HOME/pikafish"
@@ -154,8 +153,7 @@ quit" | "$HOME/pikafish" > /dev/null 2>&1; then
         run: |
           chmod +x "$HOME/pikafish"
           ls -lh "$HOME/pikafish" "$HOME/pikafish.nnue"
-          echo -e "uci
-quit" | "$HOME/pikafish" | head -3
+          printf "uci\nquit\n" | "$HOME/pikafish" | head -n 3
 
       - name: Check account secrets
         env:
@@ -175,7 +173,17 @@ quit" | "$HOME/pikafish" | head -3
           CARO_RUNTIME_HOURS: ${{ inputs.runtime_hours || '5.9' }}
         run: |
           echo "Starting bot ${{ matrix.slot }}; auto-restart until job timeout (~6h)"
+          START_TIME=$(date +%s)
+          MAX_SECONDS=21000 # ~5.83 giờ (dừng an toàn trước mốc 6 giờ)
+
           while true; do
+            NOW=$(date +%s)
+            ELAPSED=$((NOW - START_TIME))
+            if [ $ELAPSED -ge $MAX_SECONDS ]; then
+              echo "Thời gian chạy đến giới hạn an toàn (5.8h). Đang dừng bot..."
+              break
+            fi
+
             echo "=== $(date -u +'%Y-%m-%dT%H:%M:%SZ') Starting zaro18.py for Bot ${{ matrix.slot }} ==="
             python3 -u zaro18.py || echo "zaro18.py exited with code $?"
             echo "Restarting bot ${{ matrix.slot }} in 1 second"
