@@ -29,8 +29,8 @@ def _clean_env(val, default):
         return str(val).strip()
     return default
 
-USER = _clean_env(os.environ.get("ZARO18_USER"), CARO_USER_DIRECT)
-PASSWD = _clean_env(os.environ.get("ZARO18_PASSWD"), CARO_PASSWD_DIRECT)
+USER = _clean_env(os.environ.get("BOT_USER"), CARO_USER_DIRECT)
+PASS = _clean_env(os.environ.get("BOT_PASSWD"), CARO_PASSWD_DIRECT)
 
 # Cookie sẽ được tạo tự động sau khi đăng nhập (không hardcode nữa)
 COOKIE = ""
