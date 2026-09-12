@@ -1,4 +1,4 @@
-name: zaro18
+name: zaro18-20nick
 
 on:
   workflow_dispatch:
@@ -14,14 +14,81 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: ${{ github.workflow }}-gamevh-account
-  cancel-in-progress: true
-
 jobs:
   run-bot:
+    name: "Bot ${{ matrix.slot }}"
     runs-on: ubuntu-latest
     timeout-minutes: 359
+    concurrency:
+      group: "gamevh-bot-${{ matrix.slot }}"
+      cancel-in-progress: true
+
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        include:
+          - slot: '01'
+            user_secret: ZARO01_USER
+            pass_secret: ZARO01_PASSWD
+          - slot: '02'
+            user_secret: ZARO02_USER
+            pass_secret: ZARO02_PASSWD
+          - slot: '03'
+            user_secret: ZARO03_USER
+            pass_secret: ZARO03_PASSWD
+          - slot: '04'
+            user_secret: ZARO04_USER
+            pass_secret: ZARO04_PASSWD
+          - slot: '05'
+            user_secret: ZARO05_USER
+            pass_secret: ZARO05_PASSWD
+          - slot: '06'
+            user_secret: ZARO06_USER
+            pass_secret: ZARO06_PASSWD
+          - slot: '07'
+            user_secret: ZARO07_USER
+            pass_secret: ZARO07_PASSWD
+          - slot: '08'
+            user_secret: ZARO08_USER
+            pass_secret: ZARO08_PASSWD
+          - slot: '09'
+            user_secret: ZARO09_USER
+            pass_secret: ZARO09_PASSWD
+          - slot: '10'
+            user_secret: ZARO10_USER
+            pass_secret: ZARO10_PASSWD
+          - slot: '11'
+            user_secret: ZARO11_USER
+            pass_secret: ZARO11_PASSWD
+          - slot: '12'
+            user_secret: ZARO12_USER
+            pass_secret: ZARO12_PASSWD
+          - slot: '13'
+            user_secret: ZARO13_USER
+            pass_secret: ZARO13_PASSWD
+          - slot: '14'
+            user_secret: ZARO14_USER
+            pass_secret: ZARO14_PASSWD
+          - slot: '15'
+            user_secret: ZARO15_USER
+            pass_secret: ZARO15_PASSWD
+          - slot: '16'
+            user_secret: ZARO16_USER
+            pass_secret: ZARO16_PASSWD
+          - slot: '17'
+            user_secret: ZARO17_USER
+            pass_secret: ZARO17_PASSWD
+          - slot: '18'
+            user_secret: ZARO18_USER
+            pass_secret: ZARO18_PASSWD
+          - slot: '19'
+            user_secret: ZARO19_USER
+            pass_secret: ZARO19_PASSWD
+          - slot: '20'
+            user_secret: ZARO20_USER
+            pass_secret: ZARO20_PASSWD
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -45,18 +112,14 @@ jobs:
 
       - name: Download Pikafish engine + NNUE
         if: steps.cache-pikafish.outputs.cache-hit != 'true'
-        timeout-minutes: 1
+        timeout-minutes: 3
         env:
           PK_URL: https://github.com/official-pikafish/Pikafish/releases/download/Pikafish-2026-01-02/Pikafish.2026-01-02.7z
         run: |
           set -e
-          # KHÔNG dùng apt nữa: "apt-get update/install p7zip-full" từng treo >7 phút
-          # trên runner mới boot (chờ lock dpkg) khiến bot không bao giờ chạy.
-          # Dùng py7zr qua pip - nhanh, không đụng tới apt.
           python3 -m pip install --quiet py7zr
 
-          curl -fL --retry 4 --retry-delay 5 --retry-all-errors --max-time 420 \
-               -o /tmp/pikafish.7z "$PK_URL"
+          curl -fL --retry 4 --retry-delay 5 --retry-all-errors --max-time 420                -o /tmp/pikafish.7z "$PK_URL"
           ls -lh /tmp/pikafish.7z
 
           if grep -q avx512vnni /proc/cpuinfo; then BIN=pikafish-vnni512
@@ -79,7 +142,8 @@ jobs:
           print(f"[ENGINE] Đã cài {binname} + NNUE vào {home}")
           PY
 
-          if ! echo -e "uci\nquit" | "$HOME/pikafish" > /dev/null 2>&1; then
+          if ! echo -e "uci
+quit" | "$HOME/pikafish" > /dev/null 2>&1; then
             echo "[ENGINE] $BIN không chạy được -> fallback sse41-popcnt"
             cp /tmp/pikafish/Linux/pikafish-sse41-popcnt "$HOME/pikafish"
             chmod +x "$HOME/pikafish"
@@ -90,18 +154,30 @@ jobs:
         run: |
           chmod +x "$HOME/pikafish"
           ls -lh "$HOME/pikafish" "$HOME/pikafish.nnue"
-          echo -e "uci\nquit" | "$HOME/pikafish" | head -3
+          echo -e "uci
+quit" | "$HOME/pikafish" | head -3
 
-      - name: Run Xiangqi Bot zaro18 (tài khoản nguyen18)
+      - name: Check account secrets
         env:
-          ZARO18_USER: ${{ secrets.ZARO18_USER }}
-          ZARO18_PASSWD: ${{ secrets.ZARO18_PASSWD }}
+          BOT_USER: ${{ secrets[matrix.user_secret] }}
+          BOT_PASSWD: ${{ secrets[matrix.pass_secret] }}
+        run: |
+          if [ -z "$BOT_USER" ] || [ -z "$BOT_PASSWD" ]; then
+            echo "::error::Thiếu secret cho Bot ${{ matrix.slot }}: ${{ matrix.user_secret }} / ${{ matrix.pass_secret }}"
+            exit 1
+          fi
+          echo "Bot ${{ matrix.slot }}: đã nhận đủ username/password từ Secrets."
+
+      - name: Run Xiangqi Bot ${{ matrix.slot }}
+        env:
+          BOT_USER: ${{ secrets[matrix.user_secret] }}
+          BOT_PASSWD: ${{ secrets[matrix.pass_secret] }}
           CARO_RUNTIME_HOURS: ${{ inputs.runtime_hours || '5.9' }}
         run: |
-          echo "Starting zaro18.py; it will auto-restart until job timeout (~6h)"
+          echo "Starting bot ${{ matrix.slot }}; auto-restart until job timeout (~6h)"
           while true; do
-            echo "=== $(date -u +'%Y-%m-%dT%H:%M:%SZ') Starting zaro18.py ==="
+            echo "=== $(date -u +'%Y-%m-%dT%H:%M:%SZ') Starting zaro18.py for Bot ${{ matrix.slot }} ==="
             python3 -u zaro18.py || echo "zaro18.py exited with code $?"
-            echo "Restarting zaro18.py in 1 seconds"
+            echo "Restarting bot ${{ matrix.slot }} in 1 second"
             sleep 1
           done
