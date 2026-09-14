@@ -6,10 +6,10 @@ on:
       runtime_hours:
         description: 'Runtime (hours)'
         required: false
-        default: '5.9'
+        default: '5.80'
         type: string
   schedule:
-    - cron: '45 */6 * * *'
+    - cron: '0 */6 * * *'
 
 permissions:
   contents: read
