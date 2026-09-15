@@ -60,7 +60,7 @@ ENGINE_MULTIPV = 1
 # Engine tim ra nuoc thang/sat cuc se tra loi gan nhu tuc thi; neu di ngay
 # thi nhip di nhanh bat thuong. Chi bu phan CON THIEU - engine da nghi lau
 # hon MIN_MOVE_SECONDS roi thi di luon, khong cong them.
-MIN_MOVE_SECONDS = 0.2
+MIN_MOVE_SECONDS = 0.05
 
 # Kick đối phương sau khi hết ván (giống nguyen1..nguyen6):
 #   "when_lose" - bot THUA thì kick người thắng (đúng hành vi nguyen1..6, mặc định)
