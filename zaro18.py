@@ -28,8 +28,14 @@ def _clean_env(val, default):
         return str(val).strip()
     return default
 
-USER = _clean_env(os.environ.get("ZARO18_USER"), CARO_USER_DIRECT)
-PASSWD = _clean_env(os.environ.get("ZARO18_PASSWD"), CARO_PASSWD_DIRECT)
+import sys
+
+# Lấy số thứ tự acc truyền từ lệnh (ví dụ: python main.py 01 hoặc python main.py 02)
+# Nếu không truyền tham số, mặc định sẽ lấy "01"
+acc_idx = sys.argv[1] if len(sys.argv) > 1 else "01"
+
+USER = _clean_env(os.environ.get(f"ZARO{acc_idx}_USER"), CARO_USER_DIRECT)
+PASSWD = _clean_env(os.environ.get(f"ZARO{acc_idx}_PASSWD"), CARO_PASSWD_DIRECT)
 
 COOKIE = ""
 
