@@ -6,7 +6,7 @@ on:
       runtime_hours:
         description: 'Runtime (hours)'
         required: false
-        default: '5.80'
+        default: '5.50'
         type: string
   schedule:
     - cron: '0 */6 * * *'
@@ -18,7 +18,7 @@ jobs:
   run-bot:
     name: "Bot ${{ matrix.slot }}"
     runs-on: ubuntu-latest
-    timeout-minutes: 359
+    timeout-minutes: 345
     concurrency:
       group: "gamevh-bot-${{ matrix.slot }}"
       cancel-in-progress: true
