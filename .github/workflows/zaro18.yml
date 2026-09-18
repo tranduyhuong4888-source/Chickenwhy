@@ -20,7 +20,7 @@ jobs:
     timeout-minutes: 345
     concurrency:
       group: "gamevh-bot-${{ matrix.slot }}"
-      cancel-in-progress: false
+      cancel-in-progress: true  # <--- ĐÃ SỬA: Tự động hủy runner cũ của Bot này nếu có lượt chạy mới kích hoạt
 
     strategy:
       fail-fast: false
@@ -179,7 +179,7 @@ jobs:
             NOW=$(date +%s)
             ELAPSED=$((NOW - START_TIME))
             if [ $ELAPSED -ge $MAX_SECONDS ]; then
-              echo "Thời gian chạy đến giới hạn an toàn (5.8h). Đang dừng bot..."
+              echo "Thời gian chạy đến giới hạn an toàn (5.8h). Đang dừng bot..."
               break
             fi
 
@@ -188,6 +188,7 @@ jobs:
             echo "Restarting bot ${{ matrix.slot }} in 1 second"
             sleep 1
           done
+
       - name: Trigger next run automatically
         if: always()
         env:
@@ -197,5 +198,5 @@ jobs:
           curl -X POST \
             -H "Authorization: token $GH_TOKEN" \
             -H "Accept: application/vnd.github.v3+json" \
-            "https://api.github.com/repos/${{ github.repository }}/actions/workflows/zaro18.yml/dispatches" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/workflows/zaro18-20nick.yml/dispatches" \
             -d '{"ref":"${{ github.ref_name }}"}'
