@@ -9,7 +9,8 @@ on:
         default: '5.50'
         type: string
 
-# CHẶN TRÙNG LẶP: Đảm bảo chỉ có 1 workflow chạy tại 1 thời điểm nhưng KHÔNG tự hủy lượt mới được đẻ ra
+# Chỉ cho phép 1 workflow chạy tại một thời điểm.
+# Nếu có lượt mới được tạo khi lượt cũ đang chạy, lượt mới sẽ xếp hàng.
 concurrency:
   group: workflow-zaro18-20nick
   cancel-in-progress: false
@@ -119,17 +120,14 @@ jobs:
         run: |
           set -e
           python3 -m pip install --quiet py7zr
-
           curl -fL --retry 4 --retry-delay 5 --retry-all-errors --max-time 420 -o /tmp/pikafish.7z "$PK_URL"
           ls -lh /tmp/pikafish.7z
-
           if grep -q avx512vnni /proc/cpuinfo; then BIN=pikafish-vnni512
-          elif grep -q avx512f /proc/cpuinfo;  then BIN=pikafish-avx512
-          elif grep -q bmi2 /proc/cpuinfo;     then BIN=pikafish-bmi2
-          elif grep -q avx2 /proc/cpuinfo;     then BIN=pikafish-avx2
+          elif grep -q avx512f /proc/cpuinfo; then BIN=pikafish-avx512
+          elif grep -q bmi2 /proc/cpuinfo; then BIN=pikafish-bmi2
+          elif grep -q avx2 /proc/cpuinfo; then BIN=pikafish-avx2
           else BIN=pikafish-sse41-popcnt; fi
           echo "[ENGINE] CPU hợp với $BIN"
-
           python3 - "$BIN" <<'PY'
           import os, shutil, sys, py7zr
           binname = sys.argv[1]
@@ -142,7 +140,6 @@ jobs:
           os.chmod(f"{home}/pikafish", 0o755)
           print(f"[ENGINE] Đã cài {binname} + NNUE vào {home}")
           PY
-
           if ! printf "uci\nquit\n" | "$HOME/pikafish" > /dev/null 2>&1; then
             echo "[ENGINE] $BIN không chạy được -> fallback sse41-popcnt"
             cp /tmp/pikafish/Linux/pikafish-sse41-popcnt "$HOME/pikafish"
@@ -173,15 +170,15 @@ jobs:
           BOT_PASSWD: ${{ secrets[matrix.pass_secret] }}
           CARO_RUNTIME_HOURS: ${{ inputs.runtime_hours || '5.5' }}
         run: |
-          echo "Starting bot ${{ matrix.slot }}; auto-restart until job timeout (~6h)"
+          echo "Starting bot ${{ matrix.slot }}; auto-restart until job timeout (~5h45m)"
           START_TIME=$(date +%s)
-          MAX_SECONDS=19800 # ~5.83 giờ
+          MAX_SECONDS=19800
 
           while true; do
             NOW=$(date +%s)
             ELAPSED=$((NOW - START_TIME))
-            if [ $ELAPSED -ge $MAX_SECONDS ]; then
-              echo "Thời gian chạy đến giới hạn an toàn (5.8h). Đang dừng bot..."
+            if [ "$ELAPSED" -ge "$MAX_SECONDS" ]; then
+              echo "Thời gian chạy đến giới hạn an toàn (5.5h). Đang dừng bot..."
               break
             fi
 
@@ -191,22 +188,22 @@ jobs:
             sleep 1
           done
 
-  # JOB TỰ ĐỘNG TRIGGER CỦA CHU KỲ TIẾP THEO
+  # Không có cron. Chỉ tạo đúng 1 workflow kế tiếp sau khi cả 20 bot kết thúc.
   trigger-next:
     name: "Trigger Next Cycle"
     needs: run-bot
     runs-on: ubuntu-latest
     if: always() && !cancelled()
     steps:
+      - name: Wait 10 minutes before next cycle
+        run: |
+          echo "Tất cả 20 bot đã kết thúc."
+          echo "Chờ 10 phút trước khi tạo workflow kế tiếp..."
+          sleep 600
+
       - name: Trigger next run automatically
         env:
-          # LƯU Ý: Khuyên dùng PAT (Personal Access Token) lưu ở Secret AUTO_TRIGGER_TOKEN 
-          # thay cho GITHUB_TOKEN để tránh bị chặn phân quyền API dispatch.
           GH_TOKEN: ${{ secrets.AUTO_TRIGGER_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
           echo "Sending single dispatch request to run next workflow..."
-          curl -X POST \
-            -H "Authorization: token $GH_TOKEN" \
-            -H "Accept: application/vnd.github.v3+json" \
-            "https://api.github.com/repos/${{ github.repository }}/actions/workflows/zaro18-20nick.yml/dispatches" \
-            -d '{"ref":"${{ github.ref_name }}"}'
+          curl --fail-with-body -X POST             -H "Authorization: token $GH_TOKEN"             -H "Accept: application/vnd.github.v3+json"             "https://api.github.com/repos/${{ github.repository }}/actions/workflows/zaro18-20nick.yml/dispatches"             -d '{"ref":"${{ github.ref_name }}"}'
