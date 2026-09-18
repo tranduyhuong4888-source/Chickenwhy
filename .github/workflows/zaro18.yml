@@ -21,7 +21,7 @@ jobs:
     timeout-minutes: 345
     concurrency:
       group: "gamevh-bot-${{ matrix.slot }}"
-      cancel-in-progress: true
+      cancel-in-progress: false
 
     strategy:
       fail-fast: false
