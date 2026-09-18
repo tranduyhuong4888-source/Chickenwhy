@@ -8,8 +8,6 @@ on:
         required: false
         default: '5.50'
         type: string
-  schedule:
-    - cron: '0 */6 * * *'
 
 permissions:
   contents: read
@@ -170,11 +168,11 @@ jobs:
         env:
           BOT_USER: ${{ secrets[matrix.user_secret] }}
           BOT_PASSWD: ${{ secrets[matrix.pass_secret] }}
-          CARO_RUNTIME_HOURS: ${{ inputs.runtime_hours || '5.9' }}
+          CARO_RUNTIME_HOURS: ${{ inputs.runtime_hours || '5.5' }}
         run: |
           echo "Starting bot ${{ matrix.slot }}; auto-restart until job timeout (~6h)"
           START_TIME=$(date +%s)
-          MAX_SECONDS=21000 # ~5.83 giờ (dừng an toàn trước mốc 6 giờ)
+          MAX_SECONDS=19800 # ~5.83 giờ (dừng an toàn trước mốc 6 giờ)
 
           while true; do
             NOW=$(date +%s)
@@ -189,3 +187,14 @@ jobs:
             echo "Restarting bot ${{ matrix.slot }} in 1 second"
             sleep 1
           done
+      - name: Trigger next run automatically
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "Sending dispatch request to run next workflow..."
+          curl -X POST \
+            -H "Authorization: token $GH_TOKEN" \
+            -H "Accept: application/vnd.github.v3+json" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/workflows/zaro18.yml/dispatches" \
+            -d '{"ref":"${{ github.ref_name }}"}'
