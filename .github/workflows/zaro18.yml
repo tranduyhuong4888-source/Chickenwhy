@@ -9,6 +9,11 @@ on:
         default: '5.50'
         type: string
 
+# CHẶN TRÙNG LẶP CẤP WORKFLOW: Chỉ cho phép duy nhất 1 luồng zaro18-20nick chạy cùng lúc
+concurrency:
+  group: workflow-zaro18-20nick
+  cancel-in-progress: true
+
 permissions:
   contents: read
   actions: write
@@ -18,9 +23,6 @@ jobs:
     name: "Bot ${{ matrix.slot }}"
     runs-on: ubuntu-latest
     timeout-minutes: 345
-    concurrency:
-      group: "gamevh-bot-${{ matrix.slot }}"
-      cancel-in-progress: true  # <--- ĐÃ SỬA: Tự động hủy runner cũ của Bot này nếu có lượt chạy mới kích hoạt
 
     strategy:
       fail-fast: false
@@ -173,7 +175,7 @@ jobs:
         run: |
           echo "Starting bot ${{ matrix.slot }}; auto-restart until job timeout (~6h)"
           START_TIME=$(date +%s)
-          MAX_SECONDS=19800 # ~5.83 giờ (dừng an toàn trước mốc 6 giờ)
+          MAX_SECONDS=19800 # ~5.83 giờ
 
           while true; do
             NOW=$(date +%s)
@@ -189,12 +191,18 @@ jobs:
             sleep 1
           done
 
+  # JOB TỰ ĐỘNG TRIGGER: Chỉ chạy ĐÚNG 1 LẦN sau khi toàn bộ 20 bot ở trên đã hoàn thành
+  trigger-next:
+    name: "Trigger Next Cycle"
+    needs: run-bot
+    runs-on: ubuntu-latest
+    if: always() && !cancelled()
+    steps:
       - name: Trigger next run automatically
-        if: success()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "Sending dispatch request to run next workflow..."
+          echo "Sending single dispatch request to run next workflow..."
           curl -X POST \
             -H "Authorization: token $GH_TOKEN" \
             -H "Accept: application/vnd.github.v3+json" \
