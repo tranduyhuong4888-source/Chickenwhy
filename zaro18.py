@@ -299,48 +299,91 @@ def unregister_bot_table(table_path):
     except Exception: pass
 
 def fetch_session_info():
+    """Login GameVH robustly and print safe diagnostics (never password/cookie/token values)."""
     global COOKIE, TOKEN, CURRENT_PLAYER_NICKNAME, CURRENT_PLAYER_ID, PLACE_PATH, _IDENTITY_SYNCED
     try:
+        from urllib.parse import urljoin
+        import html as _html
+
         session = requests.Session()
         ua = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
               "(KHTML, like Gecko) Chrome/139.0 Safari/537.36")
         session.headers.update({
             "User-Agent": ua,
             "Accept-Language": "vi-VN,vi;q=0.9,en;q=0.7",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
         })
 
-        session.get(LOGIN_URL, timeout=20)
+        # 1) GET login page first so we keep any session cookie + hidden form fields.
+        pre = session.get(LOGIN_URL, timeout=20, allow_redirects=True)
+        print(f"[SESSION-DBG] GET login: HTTP {pre.status_code} | final={pre.url}")
+        if pre.status_code >= 400:
+            print(f"[SESSION] Trang đăng nhập trả HTTP {pre.status_code}")
+            return False
+
+        # Find the login form. Preserve hidden inputs because GameVH may change them.
+        form_match = re.search(r'(?is)<form\b[^>]*>.*?</form>', pre.text)
+        form_html = form_match.group(0) if form_match else ""
+        open_tag = re.search(r'(?is)<form\b[^>]*>', form_html)
+        action = LOGIN_URL
+        if open_tag:
+            am = re.search(r'(?is)\baction\s*=\s*["\']([^"\']*)["\']', open_tag.group(0))
+            if am and am.group(1).strip():
+                action = urljoin(pre.url, _html.unescape(am.group(1).strip()))
+
+        data = {}
+        for tag in re.findall(r'(?is)<input\b[^>]*>', form_html):
+            nm = re.search(r'(?is)\bname\s*=\s*["\']([^"\']+)["\']', tag)
+            if not nm:
+                continue
+            vm = re.search(r'(?is)\bvalue\s*=\s*["\']([^"\']*)["\']', tag)
+            data[_html.unescape(nm.group(1))] = _html.unescape(vm.group(1)) if vm else ""
+
+        # Existing GameVH field names; overwrite any values parsed from the form.
+        data.update({
+            "redirect": data.get("redirect") or "/",
+            "USER_NAME": USER,
+            "PASSWORD": PASSWD,
+            "AUTO_LOGIN": "true",
+            "LOGIN": data.get("LOGIN") or "Đăng nhập",
+        })
+
+        safe_fields = sorted(k for k in data.keys() if k.upper() not in {"PASSWORD", "PASSWD", "OLD_PASSWORD"})
+        print(f"[SESSION-DBG] POST action={action} | form fields={safe_fields}")
 
         resp = session.post(
-            LOGIN_URL, timeout=20,
-            data={"redirect": "/", "USER_NAME": USER, "PASSWORD": PASSWD,
-                  "AUTO_LOGIN": "true", "LOGIN": "Đăng nhập"},
+            action, timeout=20, data=data,
             headers={"Origin": "https://gamevh.net",
-                     "Referer": LOGIN_URL,
+                     "Referer": pre.url,
                      "Content-Type": "application/x-www-form-urlencoded"},
             allow_redirects=True)
-        if "login.jsp" in resp.url:
-            print(f"[SESSION] Đăng nhập thất bại (sai tài khoản/mật khẩu?): {resp.url}")
-            return False
 
-        if not _IDENTITY_SYNCED:
-            _IDENTITY_SYNCED = True
-            sync_profile_name(session)
-            sync_random_avatar(session)
+        history_codes = [r.status_code for r in resp.history] + [resp.status_code]
+        cookie_names = sorted(session.cookies.keys())
+        print(f"[SESSION-DBG] POST login: HTTP chain={history_codes} | final={resp.url}")
+        print(f"[SESSION-DBG] Cookies nhận được: {cookie_names if cookie_names else 'NONE'}")
 
-        game_resp = session.get(GAME_URL, timeout=20)
+        # 2) Verify authentication against the actual game page. This is more reliable
+        # than assuming final URL containing login.jsp always means a bad password.
+        game_resp = session.get(GAME_URL, timeout=20, allow_redirects=True)
         page_html = game_resp.text
+        print(f"[SESSION-DBG] GET game: HTTP {game_resp.status_code} | final={game_resp.url} | bytes={len(page_html)}")
 
         tm = re.search(r"var\s+token\s*=\s*(-?\d+)", page_html)
-        if not tm:
-            print("[SESSION] Không tìm thấy token")
-            return False
-        TOKEN = int(tm.group(1))
-
         nm = re.search(r"var\s+currentPlayerNickName\s*=\s*[\"']([^\"']+)[\"']", page_html)
-        if not nm:
-            print("[SESSION] Không tìm thấy currentPlayerNickName")
+
+        if not tm or not nm:
+            login_like = "login.jsp" in game_resp.url.lower()
+            title = ""
+            title_m = re.search(r'(?is)<title[^>]*>(.*?)</title>', page_html)
+            if title_m:
+                title = re.sub(r'\s+', ' ', title_m.group(1)).strip()[:120]
+            print("[SESSION] Chưa xác thực được phiên đăng nhập.")
+            print(f"[SESSION-DBG] token={'YES' if tm else 'NO'} | nickname={'YES' if nm else 'NO'} | redirected_to_login={login_like} | title={title!r}")
+            print("[SESSION-DBG] Đây không được tự động kết luận là sai mật khẩu; hãy gửi các dòng SESSION-DBG này để kiểm tra.")
             return False
+
+        TOKEN = int(tm.group(1))
         CURRENT_PLAYER_NICKNAME = nm.group(1).strip()
 
         pid = re.search(r"var\s+currentPlayerId\s*=\s*(\d+)", page_html)
@@ -353,12 +396,21 @@ def fetch_session_info():
 
         COOKIE = "; ".join(f"{k}={v}" for k, v in session.cookies.items())
 
+        # Only mutate profile after login has been positively verified.
+        if not _IDENTITY_SYNCED:
+            _IDENTITY_SYNCED = True
+            sync_profile_name(session)
+            sync_random_avatar(session)
+
         if CURRENT_PLAYER_NICKNAME != USER:
             print(f"[SESSION] Cảnh báo: nickname server={CURRENT_PLAYER_NICKNAME!r} khác USER={USER!r}")
         print(f"[SESSION] Login OK | Token: {TOKEN} | NickName: {CURRENT_PLAYER_NICKNAME} | PlayerID: {CURRENT_PLAYER_ID}")
         return True
+    except requests.RequestException as e:
+        print(f"[SESSION] Lỗi HTTP/kết nối khi đăng nhập: {type(e).__name__}: {e}")
+        return False
     except Exception as e:
-        print(f"[SESSION] Lỗi đăng nhập: {e}")
+        print(f"[SESSION] Lỗi xử lý đăng nhập: {type(e).__name__}: {e}")
         return False
 
 CMD_NAMES = {
