@@ -206,4 +206,28 @@ jobs:
           GH_TOKEN: ${{ secrets.AUTO_TRIGGER_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
           echo "Sending single dispatch request to run next workflow..."
-          curl --fail-with-body -X POST             -H "Authorization: token $GH_TOKEN"             -H "Accept: application/vnd.github.v3+json"             "https://api.github.com/repos/${{ github.repository }}/actions/workflows/zaro18-20nick.yml/dispatches"             -d '{"ref":"${{ github.ref_name }}"}'
+
+          # Lấy đúng tên file workflow đang chạy, không hard-code zaro18-20nick.yml.
+          WORKFLOW_FILE="${GITHUB_WORKFLOW_REF#*/.github/workflows/}"
+          WORKFLOW_FILE="${WORKFLOW_FILE%@*}"
+          echo "Current workflow file: $WORKFLOW_FILE"
+          echo "Repository: $GITHUB_REPOSITORY"
+          echo "Ref: $GITHUB_REF_NAME"
+
+          HTTP_CODE=$(curl -sS -o /tmp/dispatch-response.txt -w "%{http_code}" \
+            -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/workflows/$WORKFLOW_FILE/dispatches" \
+            -d "{\"ref\":\"$GITHUB_REF_NAME\",\"inputs\":{\"runtime_hours\":\"${{ inputs.runtime_hours || '5.5' }}\"}}")
+
+          cat /tmp/dispatch-response.txt || true
+          echo "Dispatch HTTP status: $HTTP_CODE"
+
+          if [ "$HTTP_CODE" != "204" ]; then
+            echo "::error::Không tạo được workflow kế tiếp (HTTP $HTTP_CODE)."
+            exit 1
+          fi
+
+          echo "Đã tạo workflow kế tiếp thành công. Run mới sẽ ở trạng thái Pending cho tới khi workflow hiện tại kết thúc."
