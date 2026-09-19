@@ -28,8 +28,8 @@ def _clean_env(val, default):
         return str(val).strip()
     return default
 
-USER = _clean_env(os.environ.get("ZARO18_USER"), CARO_USER_DIRECT)
-PASSWD = _clean_env(os.environ.get("ZARO18_PASSWD"), CARO_PASSWD_DIRECT)
+USER = _clean_env(os.environ.get("BOT_USER") or os.environ.get("ZARO18_USER"), CARO_USER_DIRECT)
+PASSWD = _clean_env(os.environ.get("BOT_PASSWD") or os.environ.get("ZARO18_PASSWD"), CARO_PASSWD_DIRECT)
 
 COOKIE = ""
 
@@ -1163,11 +1163,22 @@ class PikafishBot:
         if status == 0:
             self.logged_in = True
             path = msg.read_string()
+            print(f"[WS-AUTH] ✅ Server xác nhận LOGIN WebSocket | nick={CURRENT_PLAYER_NICKNAME!r} | player_id={CURRENT_PLAYER_ID}")
             if path == 'REFRESH':
-                fetch_session_info()
-                self._send_login()
+                print("[WS-AUTH] Server yêu cầu REFRESH -> lấy session/token mới")
+                if fetch_session_info():
+                    self._send_login()
+                else:
+                    print("[WS-AUTH] ❌ Không lấy lại được session -> đóng WS để reconnect")
+                    try: self.ws.close()
+                    except Exception: pass
                 return
             self.send_enter_place()
+        else:
+            self.logged_in = False
+            print(f"[WS-AUTH] ❌ Server từ chối LOGIN WebSocket: status={status}. Đóng kết nối để lấy session/token mới.")
+            try: self.ws.close()
+            except Exception: pass
 
     def _handle_enter_place_response(self, msg):
         status = msg.read_byte()
@@ -1677,6 +1688,7 @@ class PikafishBot:
     def run(self):
         print("[BOT] Khởi chạy hệ thống giám sát tự động...")
         print(f"[BOT] ⏱️ Cấu hình: engine={ENGINE_MOVETIME_MS}ms | delay gửi={MOVE_SEND_DELAY}s | min tổng={MIN_MOVE_SECONDS}s")
+        print(f"[ACCOUNT] USER source={'BOT_USER' if os.environ.get('BOT_USER') else 'ZARO18_USER' if os.environ.get('ZARO18_USER') else 'DIRECT_DEFAULT'} | user={USER!r}")
 
         # ===== CHUYỂN X 20% NGAY KHI KHỞI ĐỘNG =====
         print("[TRANSFER] 🔄 Chuyển 20% x về tài khoản đích trước khi vào bàn...")
