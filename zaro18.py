@@ -28,10 +28,8 @@ def _clean_env(val, default):
         return str(val).strip()
     return default
 
-import sys
-
-USER = _clean_env(os.environ.get("BOT_USER"), CARO_USER_DIRECT)
-PASSWD = _clean_env(os.environ.get("BOT_PASSWD"), CARO_PASSWD_DIRECT)
+USER = _clean_env(os.environ.get("ZARO18_USER"), CARO_USER_DIRECT)
+PASSWD = _clean_env(os.environ.get("ZARO18_PASSWD"), CARO_PASSWD_DIRECT)
 
 COOKIE = ""
 
@@ -62,7 +60,7 @@ ENGINE_MOVETIME_MS = 1000
 
 # Thời gian chờ TỐI ĐA để đọc bestmove từ engine (giây).
 # Phải LỚN HƠN movetime một chút để engine kịp trả lời.
-ENGINE_READ_TIMEOUT = 1.5
+ENGINE_READ_TIMEOUT = 3.0
 
 # Thời gian CHỜ CỐ ĐỊNH trước khi gửi nước đi (giây).
 # Đây là delay thực sự, KHÔNG phải bù phần thiếu.
@@ -76,7 +74,7 @@ MIN_MOVE_SECONDS = 0.5
 
 # Thời gian engine suy nghĩ khi phải tránh chốt cố định (ms)
 ENGINE_MOVETIME_AVOID_MS = 1000
-ENGINE_READ_TIMEOUT_AVOID = 1.5
+ENGINE_READ_TIMEOUT_AVOID = 3.0
 # ============================================================
 
 KICK_MODE = "when_lose"
@@ -638,6 +636,7 @@ class PikafishBot:
         self._played_this_turn = False
         self._turn_started_at = 0.0
         self._last_play_sent_at = 0.0
+        self._last_stall_retry_at = 0.0
         self.turn_timeout = 0
         self.slot_players = {}
         self._pending_kick_id = None
@@ -1537,7 +1536,17 @@ class PikafishBot:
         _move_calc_start = time.time()
 
         raw_bestmove_line = self.get_best_move(fen, moves, fixed_positions=fixed)
-        if not raw_bestmove_line: return
+        if not raw_bestmove_line:
+            print(f"[ANTI-STALL] ⚠️ Engine không trả bestmove. FEN={fen} | moves={' '.join(moves) if moves else '(none)'}")
+            try:
+                self._fsf_cmd("stop")
+                self._fsf_cmd("ucinewgame")
+                self._fsf_cmd("isready")
+            except Exception:
+                pass
+            self._played_this_turn = False
+            self._turn_started_at = min(self._turn_started_at or time.time(), time.time() - 10.0)
+            return
 
         parts = raw_bestmove_line.split()
         if len(parts) < 2: return
@@ -1550,8 +1559,20 @@ class PikafishBot:
                 best_move = trend_move
 
         if best_move in ["(none)", "0000"]:
-            print("\n[HỆ THỐNG TÀN CUỘC] ⚠️ Pikafish báo: bestmove (none) - Hết nước hợp lệ.")
-            self.board.is_my_turn = False
+            # Không được tự xóa cờ lượt ở đây. Pikafish đôi khi trả none/0000
+            # khi chuỗi FEN+moves bị lệch hoặc engine vừa timeout. Nếu xóa
+            # is_my_turn, watchdog sẽ không bao giờ cứu được lượt này.
+            print(f"[ANTI-STALL] ⚠️ Pikafish trả {best_move}; GIỮ lượt và thử phục hồi engine.")
+            print(f"[ANTI-STALL] FEN={fen} | moves={' '.join(moves) if moves else '(none)'}")
+            try:
+                self._fsf_cmd("stop")
+                self._fsf_cmd("ucinewgame")
+                self._fsf_cmd("isready")
+            except Exception:
+                pass
+            self._played_this_turn = False
+            # Cho watchdog gọi lại; không tạo thread ngay trong _thinking để tránh chồng luồng.
+            self._turn_started_at = min(self._turn_started_at or time.time(), time.time() - 10.0)
             return
 
         if best_move:
@@ -1657,11 +1678,13 @@ class PikafishBot:
 
                 if (self.board.is_playing and self.board.is_my_turn and not self._thinking
                         and self._turn_started_at
-                        and time.time() - self._turn_started_at > 12
+                        and time.time() - self._turn_started_at > 4
                         and not self._played_this_turn):
-                    print("[TURN] Tới lượt nhưng 12s chưa đi được -> tính lại")
-                    self._turn_started_at = time.time()
-                    threading.Thread(target=self._make_auto_move, daemon=True).start()
+                    _last_retry = getattr(self, '_last_stall_retry_at', 0.0)
+                    if time.time() - _last_retry >= 3.0:
+                        self._last_stall_retry_at = time.time()
+                        print("[ANTI-STALL] 🔄 Tới lượt nhưng chưa gửi được nước -> tính lại (không bỏ lượt)")
+                        threading.Thread(target=self._make_auto_move, daemon=True).start()
 
                 if self.board.is_playing:
                     self._sit_alone_since = None
