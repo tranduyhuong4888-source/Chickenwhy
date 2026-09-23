@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-zaro17 - Xiangqi Bot (gamevh.net) - engine Pikafish
-Tài khoản: nguyen17
+77 - Xiangqi Bot (gamevh.net) - engine Pikafish
+Tài khoản: nguyen10
 """
 
 import struct
@@ -52,7 +52,7 @@ PLACE_PATH = 'Lobby.xiangqi.0'
 
 # Số nhánh engine phân tích song song. MultiPV=1: chỉ tin nước tốt nhất của engine
 # (mạnh nhất & nhanh nhất). MultiPV>1: bật thêm lớp lọc xu hướng TrendAnalyzer.
-ENGINE_MULTIPV = 5
+ENGINE_MULTIPV = 3
 
 # Thoi gian TOI THIEU tu luc toi luot den khi gui nuoc di (giay).
 # Engine tim ra nuoc thang/sat cuc se tra loi gan nhu tuc thi; neu di ngay
@@ -73,7 +73,7 @@ BOT_USE_CREATE_TABLE = True
 BOT_MATCH_DURATION = '10'
 BOT_TURN_DURATION = '60'
 BOT_ACC_DURATION = '0'
-BOT_BLOCK_SOFTWARE = '0'
+BOT_BLOCK_SOFTWARE = '1'
 
 VN_TEN_DAU = [
     "Tuấn", "Minh", "Đức", "Hoàng", "Huy", "Hùng", "Dũng", "Cường", "Long", "Nam",
@@ -420,22 +420,20 @@ class XiangqiBoardTracker:
         self.is_playing = False
         self.is_red = None
     # ---------------------------------------------------------------
-    # TOẠ ĐỘ: server đánh số sid theo hàng màn hình: sid = row*9 + col,
-    # row=0 ở phía quân ĐEN (đỉnh bàn), row=9 ở phía quân ĐỎ (đáy bàn).
-    # Pikafish/UCCI dùng rank ngược lại: rank=0 ở phía quân ĐỎ.
-    # Vì vậy PHẢI đổi rank = 9-row ở CẢ hai chiều.
-    # Đây cũng phải thống nhất với _apply_move_to_fen() bên dưới.
+    # TOẠ ĐỘ: số ô (position sid) của server là TUYỆT ĐỐI, giống nhau cho cả
+    # hai bên. Client chính thức khai báo  positions[j*9+i] = {sid: j*9+i}
+    # và setRedInBottom() chỉ XOAY HÌNH HIỂN THỊ chứ không đổi số ô.
+    # Code cũ lật hàng (9 - row) khi bot cầm quân ĐEN -> sai ô -> server từ
+    # chối mọi nước -> bot đứng hình rồi thua. Bỏ hẳn phép lật.
+    #   sid = row * 9 + col (row 0 = phía ĐỎ);  engine: file='a'+col, rank=row
     # ---------------------------------------------------------------
     def pos_to_engine_move(self, source_pos, target_pos):
         s_col, s_row = source_pos % 9, source_pos // 9
         t_col, t_row = target_pos % 9, target_pos // 9
-        s_rank, t_rank = 9 - s_row, 9 - t_row
-        return f"{chr(ord('a') + s_col)}{s_rank}{chr(ord('a') + t_col)}{t_rank}"
-
+        return f"{chr(ord('a') + s_col)}{s_row}{chr(ord('a') + t_col)}{t_row}"
     def engine_move_to_pos(self, engine_move):
-        s_col, s_rank = ord(engine_move[0]) - ord('a'), int(engine_move[1])
-        t_col, t_rank = ord(engine_move[2]) - ord('a'), int(engine_move[3])
-        s_row, t_row = 9 - s_rank, 9 - t_rank
+        s_col, s_row = ord(engine_move[0]) - ord('a'), int(engine_move[1])
+        t_col, t_row = ord(engine_move[2]) - ord('a'), int(engine_move[3])
         return s_row * 9 + s_col, t_row * 9 + t_col
     @staticmethod
     def _apply_move_to_fen(board_fen, move):
@@ -635,9 +633,6 @@ class PikafishBot:
         self._enter_fail_at = 0.0        # lúc ENTER_PLACE bị từ chối (để dò bàn "ma")
         self._latest_bestmove = None
         self._mate_status = None
-        # Nước PLAY gần nhất + các nước server đã từ chối trong đúng lượt hiện tại.
-        self._last_play_move = None
-        self._rejected_moves_this_turn = set()
         self._mate_regex = re.compile(r"score mate (-?\d+)")
         self._score_regex = re.compile(r"depth (\d+).*score (cp|mate) (-?\d+)")
         self._last_score = "?"
@@ -741,93 +736,10 @@ class PikafishBot:
             
             # ÉP THỜI GIAN: Cho Engine chạy đúng 1.2 giây để lấy đủ dữ liệu chuỗi PV
             self._fsf_cmd("go movetime 3200")
-            # Lấy top nhiều nhánh rồi ưu tiên quân KHÁC TỐT nếu sức cờ không giảm quá mạnh.
-            raw = self._read_bestmove(timeout=4.2)
-            return self._prefer_non_pawn_bestmove(fen, moves, raw)
+            # movetime 3200ms mà timeout 3s -> luôn bị "stop" trước khi engine trả lời
+            return self._read_bestmove(timeout=4.2)
         except Exception as e: print(f"[ENGINE] Lỗi tính toán: {e}")
         return None
-
-    def _prefer_non_pawn_bestmove(self, fen, moves, raw_bestmove, max_cp_loss=120):
-        """Ưu tiên không đẩy Tốt nếu có nước quân khác gần tương đương.
-
-        - Không cấm Tốt tuyệt đối: nếu không có phương án khác đủ tốt thì vẫn dùng bestmove.
-        - Nếu engine báo mate thắng, giữ nguyên nước mạnh nhất để không bỏ sát cục.
-        - Chỉ chọn phương án không xuất phát từ quân P/p và không kém best quá max_cp_loss.
-        """
-        if not raw_bestmove:
-            return raw_bestmove
-        parts = raw_bestmove.split()
-        if len(parts) < 2 or parts[1] in ("(none)", "0000"):
-            return raw_bestmove
-        best = parts[1]
-
-        # Nếu đang có sát cục thắng thì không can thiệp.
-        best_info = self.trend_analyzer.pv_ram_cache.get(best, {})
-        if best_info.get("mate_in") is not None and best_info.get("mate_in", 0) > 0:
-            return raw_bestmove
-
-        # Dựng bàn hiện tại từ FEN + lịch sử moves để biết quân ở ô nguồn.
-        board_fen = fen.split()[0]
-        for mv in (moves or []):
-            nxt = self.board._apply_move_to_fen(board_fen, mv)
-            if nxt is None:
-                return raw_bestmove
-            board_fen = nxt
-        grid = []
-        for row in board_fen.split('/'):
-            line = []
-            for ch in row:
-                line.extend(['.'] * int(ch)) if ch.isdigit() else line.append(ch)
-            if len(line) != 9:
-                return raw_bestmove
-            grid.append(line)
-        if len(grid) != 10:
-            return raw_bestmove
-
-        def source_piece(mv):
-            try:
-                col = ord(mv[0]) - 97
-                rank = int(mv[1])
-                row = 9 - rank
-                return grid[row][col]
-            except Exception:
-                return '?'
-
-        # Nếu bestmove vốn không phải Tốt thì dùng luôn.
-        if source_piece(best) not in ('P', 'p'):
-            return raw_bestmove
-
-        cache = self.trend_analyzer.pv_ram_cache
-        if not cache:
-            return raw_bestmove
-        best_score = best_info.get("current_score")
-        if best_score is None:
-            vals = [d.get("current_score") for d in cache.values() if d.get("current_score") is not None]
-            best_score = max(vals) if vals else None
-        if best_score is None:
-            return raw_bestmove
-
-        candidates = []
-        for mv, info in cache.items():
-            if len(mv) < 4 or source_piece(mv) in ('P', 'p'):
-                continue
-            # Không chọn nhánh mate thua.
-            mate = info.get("mate_in")
-            if mate is not None and mate < 0:
-                continue
-            score = info.get("current_score")
-            if score is None:
-                continue
-            if score >= best_score - max_cp_loss:
-                candidates.append((score, mv))
-        if candidates:
-            candidates.sort(reverse=True)
-            score, mv = candidates[0]
-            print(f"[NO-PAWN] 🚫 Best {best} là nước Tốt -> chọn {mv} (chênh <= {max_cp_loss}cp)")
-            return f"bestmove {mv}"
-
-        print(f"[NO-PAWN] ℹ️ Best {best} là nước Tốt nhưng không có nước quân khác đủ tốt -> giữ bestmove")
-        return raw_bestmove
 
     def _read_bestmove(self, timeout=3):
         _go_start = time.time()
@@ -898,35 +810,17 @@ class PikafishBot:
                 result = self._latest_bestmove
                 break
 
-            # Nước best dính chốt cố định: chọn trực tiếp nước thay thế trong MultiPV
-            # nhưng PHẢI loại mọi nước xuất phát từ chốt cố định. Bản cũ tạo
-            # excluded_moves nhưng không truyền cho engine nên retry có thể lặp đúng
-            # một nước cũ 5 lần.
+            # Nước dính chốt -> thử TrendAnalyzer chọn nước thay thế
             print(f"[ENGINE] ⚠️ Bestmove {best_move} dính chốt cố định (lần {attempt + 1})")
-            safe_candidates = []
-            for mv, info in self.trend_analyzer.pv_ram_cache.items():
-                if mv in excluded_moves or self._move_hits_fixed_pawn(mv, fixed_positions):
-                    continue
-                mate = info.get("mate_in")
-                score = info.get("current_score")
-                if mate is not None and mate > 0:
-                    score = 100000 - abs(mate)
-                elif mate is not None and mate < 0:
-                    continue
-                if score is not None:
-                    safe_candidates.append((score, mv))
-
-            if safe_candidates:
-                safe_candidates.sort(reverse=True)
-                alt_move = safe_candidates[0][1]
-                print(f"[ENGINE] ✅ MultiPV chọn nước không dính chốt: {alt_move}")
+            alt_move = self.trend_analyzer.select_best_trend_move()
+            if alt_move and not self._move_hits_fixed_pawn(alt_move, fixed_positions):
+                print(f"[ENGINE] ✅ TrendAnalyzer chọn nước thay thế: {alt_move}")
                 result = f"bestmove {alt_move}"
                 break
 
-            # Chưa có phương án an toàn trong lần phân tích này. Ghi nhận nước lỗi;
-            # lần sau tuyệt đối không chọn lại nó từ cache.
+            # TrendAnalyzer cũng dính chốt -> loại nước này, tính lại
+            print(f"[ENGINE] TrendAnalyzer cũng dính chốt, tính lại...")
             excluded_moves.add(best_move)
-            print(f"[ENGINE] Chưa có nước thay thế an toàn, tính lại (đã loại {best_move})...")
 
         # Khôi phục MultiPV gốc
         if original_multipv < 3:
@@ -945,10 +839,7 @@ class PikafishBot:
         try:
             src_file = ord(move_str[0]) - ord('a')
             src_rank = int(move_str[1])
-            # fixed_positions lưu SID GameVH: row=0 ở phía ĐEN.
-            # UCCI rank=0 ở phía ĐỎ => row = 9-rank.
-            src_row = 9 - src_rank
-            src_pos = src_row * 9 + src_file
+            src_pos = src_rank * 9 + src_file
             return src_pos in fixed_positions
         except (ValueError, IndexError):
             return False
@@ -1128,8 +1019,7 @@ class PikafishBot:
         data.extend(self.conn.pack_byte(bet_amt_id))
         self.send_message("QUICK_PLAY", bytes(data))
 
-    def send_play(self, source_pos, target_pos, engine_move=None):
-        self._last_play_move = engine_move
+    def send_play(self, source_pos, target_pos):
         self._last_play_sent_at = time.time()
         self._played_this_turn = True
         data = bytearray()
@@ -1348,8 +1238,6 @@ class PikafishBot:
     def _handle_start_match(self, msg):
         print(f"[GAME] 🎮 Trận chiến bắt đầu!")
         self._play_reject_count = 0
-        self._last_play_move = None
-        self._rejected_moves_this_turn.clear()
         self._thinking = False
         self._turn_started_at = 0.0
         self._last_play_sent_at = 0.0
@@ -1404,9 +1292,7 @@ class PikafishBot:
         for sid, face, position, is_open in pieces:
             if position < 0 or position >= 90: continue
             game_row, col = position // 9, position % 9
-            # FEN liệt kê hàng từ phía ĐEN (trên) xuống phía ĐỎ (dưới),
-            # đúng cùng chiều row của GameVH. KHÔNG đảo hàng ở đây.
-            fen_row = game_row
+            fen_row = 9 - game_row
             color = face[0]
             piece_type = int(face[1]) if len(face) > 1 else 0
             type_to_fen = {1: 'k', 2: 'a', 3: 'b', 4: 'r', 5: 'c', 6: 'n', 7: 'p'}
@@ -1435,9 +1321,6 @@ class PikafishBot:
             if not self.board.move_history or self.board.move_history[-1] != engine_move:
                 self.board.record_move(engine_move)
                 self._played_this_turn = False
-                # MOVE là xác nhận bàn thật đã thay đổi -> lượt cũ kết thúc.
-                self._last_play_move = None
-                self._rejected_moves_this_turn.clear()
         except Exception as e: print(f"[MOVE ERROR] {e}")
 
     def _handle_play_response(self, msg):
@@ -1448,9 +1331,6 @@ class PikafishBot:
             # thủ -> bàn cờ trong đầu bot lệch với bàn thật -> đi những nước như
             # tự sát ở giữa và cuối trận.
             self.board.is_my_turn = True
-            if self._last_play_move:
-                self._rejected_moves_this_turn.add(self._last_play_move)
-                print(f"[ANTI-REJECT] 🚫 Loại nước bị server từ chối trong lượt này: {self._last_play_move}")
             self._played_this_turn = False
             self._play_reject_count = getattr(self, '_play_reject_count', 0) + 1
             print(f"[PLAY] ⚠️ Server từ chối nước đi (lần {self._play_reject_count}) -> tính lại")
@@ -1484,18 +1364,13 @@ class PikafishBot:
             self._turn_started_at = time.time()
             if not was_my_turn:
                 self._played_this_turn = False
-                self._last_play_move = None
-                self._rejected_moves_this_turn.clear()
             # ĐỐI PHƯƠNG BỎ LƯỢT: server gửi lại SET_TURN cho CÙNG một lượt, không
             # kèm MOVE nào. Vì vậy phải tính nước MỖI KHI nhận SET_TURN trỏ vào bot
             # (chỉ trừ lúc đang tính dở) - kể cả khi lịch sử nước đi không đổi.
             # Nước tính lại luôn đúng màu của bot nhờ get_current_fen() chốt bên đi
             # theo lượt thật, nên không còn cảnh ra nước của đối phương như trước.
             # Nếu thực sự không phải lượt bot, server chỉ việc từ chối - vô hại.
-            # Không gửi trùng PLAY nếu server lặp SET_TURN trong lúc nước vừa gửi
-            # còn đang chờ xác nhận. Khi MOVE tới, _handle_move sẽ mở khóa; nếu server
-            # từ chối thì _handle_play_response cũng mở khóa và tính lại.
-            if not self._thinking and not self._played_this_turn:
+            if not self._thinking:
                 threading.Thread(target=self._make_auto_move, daemon=True).start()
         except Exception as e:
             print(f"[SET_TURN ERROR] {e}")
@@ -1588,10 +1463,6 @@ class PikafishBot:
 
     def _make_auto_move(self):
         if not self.board.is_my_turn or not self.board.is_playing: return
-        # Nếu PLAY của lượt hiện tại đã gửi mà chưa bị server từ chối/chưa timeout,
-        # tuyệt đối không phát thêm luồng tính nước. MOVE xác nhận, PLAY reject hoặc
-        # watchdog sẽ mở khóa _played_this_turn khi thực sự cần tính lượt mới.
-        if self._played_this_turn: return
         if self._thinking: return
         self._thinking = True
         try:
@@ -1609,57 +1480,11 @@ class PikafishBot:
         fixed = self.fixed_pawn_positions if self.fixed_pawn_positions else None
         
         raw_bestmove_line = self.get_best_move(fen, moves, fixed_positions=fixed)
+        if not raw_bestmove_line: return
 
-        # CHỐNG ĐỨNG/CỜ LIỆT:
-        # Engine có thể tạm thời không trả bestmove hoặc trả (none)/0000 khi lịch sử
-        # nước đi vừa bị đứt (bỏ lượt), bộ lọc chốt cố định làm hết phương án, hoặc
-        # position trong engine chưa đồng bộ. Không được coi đó là hết lượt của bot.
-        def _extract_best(line):
-            if not line:
-                return None
-            p = line.split()
-            return p[1] if len(p) >= 2 else None
-
-        best_move = _extract_best(raw_bestmove_line)
-
-        if best_move in (None, "(none)", "0000") and fixed:
-            print("[ANTI-LIET] ⚠️ Không có nước với bộ lọc chốt -> thử lại KHÔNG lọc chốt")
-            raw_bestmove_line = self.get_best_move(fen, moves, fixed_positions=None)
-            best_move = _extract_best(raw_bestmove_line)
-
-        if best_move in (None, "(none)", "0000"):
-            # Chốt thế hiện tại thành một FEN mới với ĐÚNG bên đang đi theo SET_TURN.
-            # Việc này loại bỏ lịch sử bị lệch mà vẫn giữ nguyên vị trí quân hiện tại.
-            cur = self.board.base_fen
-            ok = True
-            for mv in self.board.moves_since_base:
-                nxt = self.board._apply_move_to_fen(cur, mv)
-                if nxt is None:
-                    ok = False
-                    break
-                cur = nxt
-            if ok:
-                my_side = 'w' if self.board.is_red else 'b'
-                turn_side = my_side  # hàm này chỉ chạy khi SET_TURN xác nhận tới lượt bot
-                print(f"[ANTI-LIET] 🔄 Resync FEN, ép bên đi={turn_side}, xóa lịch sử lỗi và tính lại")
-                self.board.base_fen = cur
-                self.board.base_side = turn_side
-                self.board.moves_since_base = []
-                fen, moves = f"{cur} {turn_side}", []
-                # Dọn trạng thái tìm kiếm cũ của engine trước khi tính lại.
-                self._fsf_cmd("stop")
-                self._fsf_cmd("ucinewgame")
-                self._fsf_cmd("isready")
-                time.sleep(0.15)
-                raw_bestmove_line = self.get_best_move(fen, moves, fixed_positions=None)
-                best_move = _extract_best(raw_bestmove_line)
-
-        if best_move in (None, "(none)", "0000"):
-            # TUYỆT ĐỐI không set is_my_turn=False ở đây. Server mới là nguồn sự thật
-            # về lượt đi; giữ cờ lượt để watchdog tiếp tục thử cho tới SET_TURN/GAMEOVER.
-            self._played_this_turn = False
-            print("[ANTI-LIET] ❌ Engine vẫn chưa có nước. Giữ is_my_turn=True để watchdog thử lại.")
-            return
+        parts = raw_bestmove_line.split()
+        if len(parts) < 2: return
+        best_move = parts[1]
 
         # ÁP DỤNG BỘ LỌC TỐI ƯU XU HƯỚNG/SÁT CỤC TỪ RAM
         # CHỈ khi MultiPV > 1. Với MultiPV=1, pv_ram_cache chỉ chứa nước đầu của từng
@@ -1667,52 +1492,15 @@ class PikafishBot:
         # ở depth nông và ghi đè lên bestmove cuối cùng của engine => đi yếu hơn.
         if ENGINE_MULTIPV > 1:
             trend_move = self.trend_analyzer.select_best_trend_move()
-            # Nếu bàn có chốt cố định thì TrendAnalyzer không được phép ghi đè
-            # bằng một nước xuất phát từ chính chốt bị khóa.
-            if (trend_move and best_move not in ["(none)", "0000"]
-                    and not (fixed and self._move_hits_fixed_pawn(trend_move, fixed))):
+            if trend_move and best_move not in ["(none)", "0000"]:
                 print(f"[RAM-LEARN] 🧠 Thay thế '{best_move}' bằng nước đi tối ưu: '{trend_move}'")
                 best_move = trend_move
 
-        # NO-PAWN phải chạy SAU CÙNG. Bản v4 chạy nó trong get_best_move(), sau đó
-        # TrendAnalyzer phía trên có thể ghi đè và biến lại thành nước Tốt.
-        # Giữ một bản an toàn để nếu bộ lọc NO-PAWN vô tình chọn chốt cố định thì
-        # quay lại nước trước đó.
-        _safe_before_no_pawn = best_move
-        _np_line = self._prefer_non_pawn_bestmove(fen, moves, f"bestmove {best_move}")
-        _np_move = _extract_best(_np_line)
-        if _np_move and _np_move not in ("(none)", "0000"):
-            if fixed and self._move_hits_fixed_pawn(_np_move, fixed):
-                print(f"[NO-PAWN] ⚠️ Bỏ phương án {_np_move} vì dính chốt cố định; giữ {_safe_before_no_pawn}")
-            else:
-                best_move = _np_move
-
-        # ANTI-REJECT: server đã từ chối nước nào trong lượt này thì không gửi lại.
-        # Ưu tiên ứng viên MultiPV có điểm cao nhất chưa bị từ chối và không dính chốt khóa.
-        if best_move in self._rejected_moves_this_turn:
-            alternatives = []
-            for mv, info in self.trend_analyzer.pv_ram_cache.items():
-                if mv in self._rejected_moves_this_turn:
-                    continue
-                if fixed and self._move_hits_fixed_pawn(mv, fixed):
-                    continue
-                mate = info.get("mate_in")
-                score = info.get("current_score")
-                if mate is not None and mate > 0:
-                    score = 100000 - abs(mate)
-                elif mate is not None and mate < 0:
-                    continue
-                if score is not None:
-                    alternatives.append((score, mv))
-            if alternatives:
-                alternatives.sort(reverse=True)
-                old = best_move
-                best_move = alternatives[0][1]
-                print(f"[ANTI-REJECT] 🔁 {old} đã bị reject -> thử ứng viên kế: {best_move}")
-            else:
-                print(f"[ANTI-REJECT] ⚠️ Không còn ứng viên MultiPV an toàn sau khi loại {sorted(self._rejected_moves_this_turn)}")
-                self._played_this_turn = False
-                return
+        # XỬ LÝ KỊCH BẢN KHI HẾT NƯỚC ĐI CỜ TÀN
+        if best_move in ["(none)", "0000"]:
+            print("\n[HỆ THỐNG TÀN CUỘC] ⚠️ Pikafish báo: bestmove (none) - Hết nước hợp lệ.")
+            self.board.is_my_turn = False
+            return
 
         # Gửi nước đi hợp lệ lên hệ thống GameVH
         if best_move:
@@ -1728,7 +1516,7 @@ class PikafishBot:
                 if self.board.is_my_turn and self.board.is_playing:
                     print(f"-> Hành động: Xuất quân: {best_move} "
                           f"[điểm {self._last_score} depth {self._last_depth}]")
-                    self.send_play(source_pos, target_pos, best_move)
+                    self.send_play(source_pos, target_pos)
             except Exception as e: print(f"[BOT ERROR] Dịch tọa độ lỗi: {e}")
 
     def _decode_piece_id(self, encoded_id):
@@ -1745,21 +1533,6 @@ class PikafishBot:
 
     def run(self):
         print("[BOT] Khởi chạy hệ thống giám sát tự động...")
-
-        # ===== CHUYỂN XU 50% NGAY KHI KHỞI ĐỘNG (TRƯỚC KHI VÀO BÀN) =====
-        print("[TRANSFER] 🔄 Chuyển 50% xu cho xxxx trước khi vào bàn...")
-        try:
-            from transfer_xu_bot import transfer_xu_sync
-            if transfer_xu_sync(USER, PASSWD, dest_id=67950234, percent=50):
-                print("[TRANSFER] ✅ Chuyển xu thành công!")
-            else:
-                print("[TRANSFER] ⚠️ Chuyển xu thất bại, tiếp tục chạy bot...")
-        except ImportError as ie:
-            print(f"[TRANSFER] ❌ Không tìm thấy transfer_xu_bot: {ie}")
-        except Exception as e:
-            print(f"[TRANSFER] ❌ Lỗi chuyển xu: {e}")
-        print("[TRANSFER] ✅ Hoàn tất, bắt đầu vào bàn chơi...")
-        # ===== END CHUYỂN XU =====
         while True:
             try:
                 now_ts = time.time()
@@ -1804,21 +1577,12 @@ class PikafishBot:
                 # lượt, gói MOVE tới trễ, nước bị từ chối...) -> tự tính lại, tránh
                 # đứng im cho tới khi hết giờ rồi thua oan.
                 if (self.board.is_playing and self.board.is_my_turn and not self._thinking
-                        and self._turn_started_at):
-                    _turn_age = time.time() - self._turn_started_at
-                    # Chưa gửi được nước: cứu sớm hơn để còn đủ thời gian resync + engine.
-                    if _turn_age > 8 and not self._played_this_turn:
-                        print("[ANTI-LIET] Tới lượt >8s chưa gửi được nước -> resync/tính lại")
-                        self._turn_started_at = time.time()
-                        threading.Thread(target=self._make_auto_move, daemon=True).start()
-                    # Đã gửi PLAY nhưng server không phát MOVE/SET_TURN xác nhận: cho phép
-                    # tính/gửi lại thay vì khóa _played_this_turn tới hết đồng hồ.
-                    elif (self._played_this_turn and self._last_play_sent_at
-                          and time.time() - self._last_play_sent_at > 10):
-                        print("[ANTI-LIET] PLAY >10s chưa được xác nhận -> mở khóa và tính lại")
-                        self._played_this_turn = False
-                        self._turn_started_at = time.time()
-                        threading.Thread(target=self._make_auto_move, daemon=True).start()
+                        and self._turn_started_at
+                        and time.time() - self._turn_started_at > 12
+                        and not self._played_this_turn):
+                    print("[TURN] Tới lượt nhưng 12s chưa đi được -> tính lại")
+                    self._turn_started_at = time.time()
+                    threading.Thread(target=self._make_auto_move, daemon=True).start()
 
                 # KHÓA CHẶT: Khi đang trong ván đấu (is_playing), tuyệt đối KHÔNG gửi lệnh tìm/tạo/rời bàn!
                 if self.board.is_playing:
