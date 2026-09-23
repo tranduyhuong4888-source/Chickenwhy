@@ -1480,11 +1480,57 @@ class PikafishBot:
         fixed = self.fixed_pawn_positions if self.fixed_pawn_positions else None
         
         raw_bestmove_line = self.get_best_move(fen, moves, fixed_positions=fixed)
-        if not raw_bestmove_line: return
 
-        parts = raw_bestmove_line.split()
-        if len(parts) < 2: return
-        best_move = parts[1]
+        # CHỐNG ĐỨNG/CỜ LIỆT:
+        # Engine có thể tạm thời không trả bestmove hoặc trả (none)/0000 khi lịch sử
+        # nước đi vừa bị đứt (bỏ lượt), bộ lọc chốt cố định làm hết phương án, hoặc
+        # position trong engine chưa đồng bộ. Không được coi đó là hết lượt của bot.
+        def _extract_best(line):
+            if not line:
+                return None
+            p = line.split()
+            return p[1] if len(p) >= 2 else None
+
+        best_move = _extract_best(raw_bestmove_line)
+
+        if best_move in (None, "(none)", "0000") and fixed:
+            print("[ANTI-LIET] ⚠️ Không có nước với bộ lọc chốt -> thử lại KHÔNG lọc chốt")
+            raw_bestmove_line = self.get_best_move(fen, moves, fixed_positions=None)
+            best_move = _extract_best(raw_bestmove_line)
+
+        if best_move in (None, "(none)", "0000"):
+            # Chốt thế hiện tại thành một FEN mới với ĐÚNG bên đang đi theo SET_TURN.
+            # Việc này loại bỏ lịch sử bị lệch mà vẫn giữ nguyên vị trí quân hiện tại.
+            cur = self.board.base_fen
+            ok = True
+            for mv in self.board.moves_since_base:
+                nxt = self.board._apply_move_to_fen(cur, mv)
+                if nxt is None:
+                    ok = False
+                    break
+                cur = nxt
+            if ok:
+                my_side = 'w' if self.board.is_red else 'b'
+                turn_side = my_side  # hàm này chỉ chạy khi SET_TURN xác nhận tới lượt bot
+                print(f"[ANTI-LIET] 🔄 Resync FEN, ép bên đi={turn_side}, xóa lịch sử lỗi và tính lại")
+                self.board.base_fen = cur
+                self.board.base_side = turn_side
+                self.board.moves_since_base = []
+                fen, moves = f"{cur} {turn_side}", []
+                # Dọn trạng thái tìm kiếm cũ của engine trước khi tính lại.
+                self._fsf_cmd("stop")
+                self._fsf_cmd("ucinewgame")
+                self._fsf_cmd("isready")
+                time.sleep(0.15)
+                raw_bestmove_line = self.get_best_move(fen, moves, fixed_positions=None)
+                best_move = _extract_best(raw_bestmove_line)
+
+        if best_move in (None, "(none)", "0000"):
+            # TUYỆT ĐỐI không set is_my_turn=False ở đây. Server mới là nguồn sự thật
+            # về lượt đi; giữ cờ lượt để watchdog tiếp tục thử cho tới SET_TURN/GAMEOVER.
+            self._played_this_turn = False
+            print("[ANTI-LIET] ❌ Engine vẫn chưa có nước. Giữ is_my_turn=True để watchdog thử lại.")
+            return
 
         # ÁP DỤNG BỘ LỌC TỐI ƯU XU HƯỚNG/SÁT CỤC TỪ RAM
         # CHỈ khi MultiPV > 1. Với MultiPV=1, pv_ram_cache chỉ chứa nước đầu của từng
@@ -1495,12 +1541,6 @@ class PikafishBot:
             if trend_move and best_move not in ["(none)", "0000"]:
                 print(f"[RAM-LEARN] 🧠 Thay thế '{best_move}' bằng nước đi tối ưu: '{trend_move}'")
                 best_move = trend_move
-
-        # XỬ LÝ KỊCH BẢN KHI HẾT NƯỚC ĐI CỜ TÀN
-        if best_move in ["(none)", "0000"]:
-            print("\n[HỆ THỐNG TÀN CUỘC] ⚠️ Pikafish báo: bestmove (none) - Hết nước hợp lệ.")
-            self.board.is_my_turn = False
-            return
 
         # Gửi nước đi hợp lệ lên hệ thống GameVH
         if best_move:
@@ -1592,12 +1632,21 @@ class PikafishBot:
                 # lượt, gói MOVE tới trễ, nước bị từ chối...) -> tự tính lại, tránh
                 # đứng im cho tới khi hết giờ rồi thua oan.
                 if (self.board.is_playing and self.board.is_my_turn and not self._thinking
-                        and self._turn_started_at
-                        and time.time() - self._turn_started_at > 12
-                        and not self._played_this_turn):
-                    print("[TURN] Tới lượt nhưng 12s chưa đi được -> tính lại")
-                    self._turn_started_at = time.time()
-                    threading.Thread(target=self._make_auto_move, daemon=True).start()
+                        and self._turn_started_at):
+                    _turn_age = time.time() - self._turn_started_at
+                    # Chưa gửi được nước: cứu sớm hơn để còn đủ thời gian resync + engine.
+                    if _turn_age > 8 and not self._played_this_turn:
+                        print("[ANTI-LIET] Tới lượt >8s chưa gửi được nước -> resync/tính lại")
+                        self._turn_started_at = time.time()
+                        threading.Thread(target=self._make_auto_move, daemon=True).start()
+                    # Đã gửi PLAY nhưng server không phát MOVE/SET_TURN xác nhận: cho phép
+                    # tính/gửi lại thay vì khóa _played_this_turn tới hết đồng hồ.
+                    elif (self._played_this_turn and self._last_play_sent_at
+                          and time.time() - self._last_play_sent_at > 10):
+                        print("[ANTI-LIET] PLAY >10s chưa được xác nhận -> mở khóa và tính lại")
+                        self._played_this_turn = False
+                        self._turn_started_at = time.time()
+                        threading.Thread(target=self._make_auto_move, daemon=True).start()
 
                 # KHÓA CHẶT: Khi đang trong ván đấu (is_playing), tuyệt đối KHÔNG gửi lệnh tìm/tạo/rời bàn!
                 if self.board.is_playing:
